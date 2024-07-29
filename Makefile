@@ -38,7 +38,7 @@ MY_CFLAGS += -g -DDEBUG $(RHEL8FLAG)
 EXTRA_CFLAGS += -Wno-misleading-indentation -Wuninitialized
 CC += ${MY_CFLAGS}
 
-EXTRA_CFLAGS += -I $(MAKEFILE_DIR)/include
+EXTRA_CFLAGS += -I $(MAKEFILE_DIR)/include 
 
 5G_MOD := src/gtp5g.o
 

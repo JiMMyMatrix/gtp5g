@@ -83,6 +83,15 @@ struct proc_gtp5g_qos
     bool qos_enable;
 };
 
+struct proc_gtp5g_vnpdr {
+    u32 id;
+    u32 role_addr4;
+    u32 gtpu_addr4;
+    u32 group_id;
+    bool unicast;
+    bool broadcast;
+};
+
 struct proc_dir_entry *proc_gtp5g = NULL;
 struct proc_dir_entry *proc_gtp5g_dbg = NULL;
 struct proc_dir_entry *proc_gtp5g_pdr = NULL;
@@ -90,17 +99,20 @@ struct proc_dir_entry *proc_gtp5g_far = NULL;
 struct proc_dir_entry *proc_gtp5g_qer = NULL;
 struct proc_dir_entry *proc_gtp5g_urr = NULL;
 struct proc_dir_entry *proc_gtp5g_qos = NULL;
+struct proc_dir_entry *proc_gtp5g_vnpdr = NULL;
 struct proc_gtp5g_pdr proc_pdr;
 struct proc_gtp5g_far proc_far;
 struct proc_gtp5g_qer proc_qer;
 struct proc_gtp5g_urr proc_urr;
 struct proc_gtp5g_qos proc_qos;
+struct proc_gtp5g_vnpdr proc_vnpdr;
 
 u64 proc_seid = 0;
 u16 proc_pdr_id = 0;
 u32 proc_far_id = 0;
 u32 proc_qer_id = 0;
 u32 proc_urr_id = 0;
+u32 proc_vnpdr_id = 0;
 
 struct list_head * get_proc_gtp5g_dev_list_head(){
     return &proc_gtp5g_dev;

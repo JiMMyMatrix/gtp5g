@@ -11,6 +11,8 @@
 #include "bar.h"
 #include "urr.h"
 #include "pktinfo.h"
+#include "log.h"
+
 
 struct gtp5g_dev *gtp5g_find_dev(struct net *src_net, int ifindex, int netnsfd)
 {

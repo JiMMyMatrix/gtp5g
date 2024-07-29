@@ -23,6 +23,14 @@
 #define FAR_ACTION_U8  1
 #define FAR_ACTION_U16 2
 
+#define FAR_DESTINATION_INTERFACE_ACCESS 0
+#define FAR_DESTINATION_INTERFACE_CORE 1
+#define FAR_DESTINATION_INTERFACE_SGI_LAN_N6_LAN 2
+#define FAR_DESTINATION_INTERFACE_CP_FUNCTION 3
+#define FAR_DESTINATION_INTERFACE_LI_FUNCTION 4
+#define FAR_DESTIANTION_INTERFACE_5G_LAN 5
+
+
 struct outer_header_creation {
     u16 description;
     u32 teid;
@@ -40,6 +48,8 @@ struct forwarding_policy {
 struct forwarding_parameter {
     struct outer_header_creation *hdr_creation;
     struct forwarding_policy *fwd_policy;
+    u8 destination_interface;
+    struct network_instance *net_instance;
 };
 
 struct far {

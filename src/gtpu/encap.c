@@ -220,6 +220,8 @@ static int gtp1c_handle_echo_req(struct sk_buff *skb, struct gtp5g_dev *gtp)
         return 1;
     }
 
+    GTP5G_LOG(NULL, "Here in echo req\n");
+
     udp_tunnel_xmit_skb(rt, gtp->sk1u, skb,
                     fl4.saddr, fl4.daddr,
                     iph->tos,
@@ -326,7 +328,8 @@ static int gtp1u_udp_encap_recv(struct gtp5g_dev *gtp, struct sk_buff *skb)
         }
     }
 
-    pdr = pdr_find_by_gtp1u(gtp, skb, hdrlen, teid, gtp_type);
+    // pdr = pdr_find_by_gtp1u(gtp, skb, hdrlen, teid, gtp_type);
+    pdr = pdr_find_by_lan(gtp, skb, hdrlen, teid, gtp_type);
     if (!pdr) {
         GTP5G_ERR(gtp->dev, "No PDR match this skb : teid[%d]\n", ntohl(teid));
         return PKT_DROPPED;
@@ -736,6 +739,98 @@ out:
     return rt;
 }
 
+static int gtp5g_buf_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
+    struct pdr *pdr, struct far *far)
+{
+    if (pdr_addr_is_netlink(pdr)) {
+        if (netlink_send(pdr, far, skb, dev_net(dev), NULL, 0) < 0) {
+            GTP5G_ERR(dev, "Failed to send skb to netlink socket PDR(%u)", pdr->id);
+            ++pdr->dl_drop_cnt;
+        }
+    } else {
+        // TODO: handle nonlinear part
+        if (unix_sock_send(pdr, far, skb->data, skb_headlen(skb), 0) < 0) {
+            GTP5G_ERR(dev, "Failed to send skb to unix domain socket PDR(%u)", pdr->id);
+            ++pdr->dl_drop_cnt;
+        }
+    }
+
+    dev_kfree_skb(skb);
+    return FAR_ACTION_BUFF;
+}
+
+static int gtp5g_drop_skb_ipv4(struct sk_buff *skb, struct net_device *dev, 
+    struct pdr *pdr)
+{
+    ++pdr->dl_drop_cnt;
+    GTP5G_INF(NULL, "PDR (%u) DL_DROP_CNT (%llu)", pdr->id, pdr->dl_drop_cnt);
+    dev_kfree_skb(skb);
+    return FAR_ACTION_DROP;
+}
+
+int gtp5g_handle_skb_lan(struct sk_buff *skb, struct net_device *dev,
+    struct gtp5g_pktinfo *pktinfo){
+    
+    struct gtp5g_dev *gtp = netdev_priv(dev);
+    struct pdr *pdr;
+    struct far *far;
+    struct iphdr *iph;
+
+    __be32 h1 = 170230031;  //10.37.129.15
+    __be32 h2 = 170230032;  //10.37.129.16
+
+    __be32 ue1 = 171704321; //10.60.0.1
+    __be32 ue2 = 171704322; //10.60.0.2
+
+    iph = ip_hdr(skb);
+    if (gtp->role == GTP5G_ROLE_UPF){
+         // pdr = pdr_find_by_ipv4(gtp, skb, 0, iph->daddr);
+
+        // GTP5G_LOG(NULL, "Dest IP: %u\n", ntohl(iph->saddr));
+        // snprintf(source, 16, "%pI4", &iph->saddr);
+
+        // if(ntohl(iph->saddr) == ue1){
+        //     iph->daddr = htonl(h2);
+        //     pdr = pdr_find_by_lan(gtp, skb, 0, iph->daddr);
+        // }
+        // else{
+        //     iph->daddr = htonl(h1);
+        //     pdr = pdr_find_by_lan(gtp, skb, 0, iph->daddr);
+        // }
+
+        // pdr = pdr_find_by_lan(gtp, skb, 0, iph->saddr);
+    }else{
+        // pdr = pdr_find_by_lan(gtp, skb, 0, iph->saddr);
+    }
+
+    if (!pdr) {
+        GTP5G_INF(dev, "no PDR found for %pI4, skip\n", &iph->saddr);
+        return -ENOENT;
+    }
+
+    far = rcu_dereference(pdr->far);
+    if (far) {
+        // One and only one of the DROP, FORW and BUFF flags shall be set to 1.
+        // The NOCP flag may only be set if the BUFF flag is set.
+        // The DUPL flag may be set with any of the DROP, FORW, BUFF and NOCP flags.
+        switch (far->action & FAR_ACTION_MASK) {
+        case FAR_ACTION_DROP:
+            return gtp5g_drop_skb_ipv4(skb, dev, pdr);
+        case FAR_ACTION_FORW:
+            return gtp5g_fwd_skb_ipv4(skb, dev, pktinfo, pdr, far);
+        case FAR_ACTION_BUFF:
+            return gtp5g_buf_skb_ipv4(skb, dev, pdr, far);
+        default:
+            GTP5G_ERR(dev, "Unspec apply action(%u) in FAR(%u) and related to PDR(%u)",
+                far->action, far->id, pdr->id);
+        }
+    }
+
+    return -ENOENT;
+
+}
+
+
 static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
     unsigned int hdrlen, struct pdr *pdr, struct far *far)
 {
@@ -768,9 +863,85 @@ static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
         volume = volume_mbqe;
     }
 
+    
+
     if (fwd_param) {
         if ((fwd_policy = fwd_param->fwd_policy))
             skb->mark = fwd_policy->mark;
+
+        if (fwd_param->destination_interface == FAR_DESTIANTION_INTERFACE_5G_LAN) {
+            struct udphdr *uhdr;
+            struct gtpv1_hdr *gtpv1h;
+            struct gtp5g_pktinfo pktinfo;
+            struct rtable *rt;
+            struct flowi4 fl4;
+
+            hdr_creation = fwd_param->hdr_creation;
+
+            // iph = ip_hdr(skb);
+            // GTP5G_LOG(NULL, "Uplink before Source: %pI4\n", &iph->saddr);
+            // GTP5G_LOG(NULL, "Uplink before Destination: %pI4\n", &iph->daddr);
+
+            if (iptunnel_pull_header(skb,
+                    hdrlen, 
+                    skb->protocol,
+                    !net_eq(sock_net(pdr->sk), 
+                    dev_net(dev)))) {
+                GTP5G_ERR(dev, "Failed to pull GTP-U and UDP headers\n");
+                return PKT_DROPPED;
+            }
+
+            skb->dev = dev;
+
+            // skb_reset_network_header(skb);
+            skb_reset_inner_headers(skb);
+
+            iph = ip_hdr(skb);
+            if (iph){
+                GTP5G_LOG(NULL, "Uplink after Source: %pI4\n", &iph->saddr);
+                GTP5G_LOG(NULL, "Uplink after Destination: %pI4\n", &iph->daddr);
+            }else
+                GTP5G_LOG(NULL, "Uplink after ip header null\n");
+
+            if (pskb_may_pull(skb, skb->len)){
+                // uhdr = skb_push(skb, sizeof(struct udphdr));
+                // memset(uhdr, 0, sizeof(struct udphdr));
+
+                rt = lan_find_route(
+                    skb,
+                    pdr->sk, 
+                    dev,
+                    0,
+                    hdr_creation->peer_addr_ipv4.s_addr, //Need to update to self define
+                    &fl4);
+
+                if (IS_ERR(rt))
+                    goto err;
+
+                
+                if (rt) 
+                    GTP5G_LOG(NULL, "Exist\n");
+                else
+                    GTP5G_LOG(NULL, "Not found\n");
+
+                gtp5g_set_pktinfo_ipv4(&pktinfo,
+                    pdr->sk, 
+                    iph, 
+                    hdr_creation,
+                    pdr->qfi, 
+                    rt, 
+                    &fl4, 
+                    dev);
+
+                // GTP5G_LOG(NULL, "2\n");
+
+                gtp5g_push_header(skb, &pktinfo);
+                gtp5g_xmit_skb_ipv4(skb, &pktinfo);
+
+                return PKT_FORWARDED;
+            }
+            return PKT_DROPPED;
+        }
 
         if ((hdr_creation = fwd_param->hdr_creation)) {
             // Just modify the teid and packet dest ip
@@ -838,6 +1009,13 @@ static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
      * */
     skb_reset_network_header(skb);
 
+    // iph = ip_hdr(skb);
+    // if (iph){
+    //     GTP5G_LOG(NULL, "Uplink after inner Source: %pI4\n", &iph->saddr);
+    //     GTP5G_LOG(NULL, "Uplink after inner Destination: %pI4\n", &iph->daddr);
+    // }else
+    //     GTP5G_LOG(NULL, "Uplink after ip header null\n");
+
     skb->dev = dev;
 
     stats = this_cpu_ptr(skb->dev->tstats);
@@ -870,17 +1048,11 @@ static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
     }
 
     return PKT_FORWARDED;
+err:
+    return -EBADMSG;
 }
 
-static int gtp5g_drop_skb_ipv4(struct sk_buff *skb, struct net_device *dev, 
-    struct pdr *pdr)
-{
-    ++pdr->dl_drop_cnt;
-    GTP5G_INF(NULL, "PDR (%u) DL_DROP_CNT (%llu)", pdr->id, pdr->dl_drop_cnt);
-    dev_kfree_skb(skb);
-    return FAR_ACTION_DROP;
-}
-
+// downlink 
 static int gtp5g_fwd_skb_ipv4(struct sk_buff *skb, 
     struct net_device *dev, struct gtp5g_pktinfo *pktinfo, 
     struct pdr *pdr, struct far *far)
@@ -900,6 +1072,9 @@ static int gtp5g_fwd_skb_ipv4(struct sk_buff *skb,
         GTP5G_ERR(dev, "Unknown RAN address\n");
         goto err;
     }
+
+    GTP5G_LOG(NULL, "Downlink Source: %pI4\n", &iph->saddr);
+    GTP5G_LOG(NULL, "Downlink Destination: %pI4\n", &iph->daddr);
 
     fwd_param = rcu_dereference(far->fwd_param);
     if (!(fwd_param &&
@@ -961,26 +1136,7 @@ err:
     return -EBADMSG;
 }
 
-static int gtp5g_buf_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
-    struct pdr *pdr, struct far *far)
-{
-    if (pdr_addr_is_netlink(pdr)) {
-        if (netlink_send(pdr, far, skb, dev_net(dev), NULL, 0) < 0) {
-            GTP5G_ERR(dev, "Failed to send skb to netlink socket PDR(%u)", pdr->id);
-            ++pdr->dl_drop_cnt;
-        }
-    } else {
-        // TODO: handle nonlinear part
-        if (unix_sock_send(pdr, far, skb->data, skb_headlen(skb), 0) < 0) {
-            GTP5G_ERR(dev, "Failed to send skb to unix domain socket PDR(%u)", pdr->id);
-            ++pdr->dl_drop_cnt;
-        }
-    }
-
-    dev_kfree_skb(skb);
-    return FAR_ACTION_BUFF;
-}
-
+// downlink
 int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
     struct gtp5g_pktinfo *pktinfo)
 {
@@ -989,11 +1145,40 @@ int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
     struct far *far;
     //struct gtp5g_qer *qer;
     struct iphdr *iph;
+    struct udphdr *udph;
+    struct gtpv1_hdr *gtp1 = (struct gtpv1_hdr *)(skb->data + sizeof(struct udphdr));
 
     /* Read the IP destination address and resolve the PDR.
      * Prepend PDR header with TEI/TID from PDR.
      */
     iph = ip_hdr(skb);
+
+    /* So in 5GLAN, the downlink packet's layer from outside to inside should be gtp->udp->ip.
+     * And the ip header would be the uplink outer ip header(10.60.0.x) not the inside ip header
+     * (ue host ip 10.37.129.x)
+     */ 
+    udph = udp_hdr(skb);
+    
+    if (!udph)
+        GTP5G_LOG(NULL, "No UDP header\n");
+    if (!gtp1)
+        GTP5G_LOG(NULL, "No GTP header\n");
+
+    GTP5G_LOG(NULL, "GTP type: %d\n", gtp1->type);
+    GTP5G_LOG(NULL, "GTP flags: %d\n", gtp1->flags);
+    GTP5G_LOG(NULL, "UDP src port: %d\n", ntohs(udph->source));
+    GTP5G_LOG(NULL, "UDP dst port: %d\n", ntohs(udph->dest));
+    GTP5G_LOG(NULL, "UDP len: %d\n", ntohs(udph->len));
+    GTP5G_LOG(NULL, "UDP check: %hu\n", udph->check);
+    GTP5G_LOG(NULL, "Downlink search address: %pI4\n", &iph->daddr);
+
+    // if(!tst)
+    //     GTP5G_LOG(NULL, "No Out IP header\n");
+    // else{
+    //     GTP5G_LOG(NULL, "Downlink out src address: %pI4\n", &tst->saddr);
+    //     GTP5G_LOG(NULL, "Downlink out dst address: %pI4\n", &tst->daddr);
+    // }
+
     if (gtp->role == GTP5G_ROLE_UPF)
         pdr = pdr_find_by_ipv4(gtp, skb, 0, iph->daddr);
     else

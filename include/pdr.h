@@ -97,6 +97,8 @@ struct pdr {
 
 extern void pdr_context_delete(struct pdr *);
 extern struct pdr *find_pdr_by_id(struct gtp5g_dev *, u64, u16);
+extern struct pdr *pdr_find_by_lan(struct gtp5g_dev *, struct sk_buff *,
+        unsigned int, u32, u8);
 extern struct pdr *pdr_find_by_gtp1u(struct gtp5g_dev *, struct sk_buff *,
         unsigned int, u32, u8);
 extern struct pdr *pdr_find_by_ipv4(struct gtp5g_dev *, struct sk_buff *,

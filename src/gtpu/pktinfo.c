@@ -67,6 +67,8 @@ struct rtable *ip4_find_route(struct sk_buff *skb, struct iphdr *iph,
     __be32 saddr, __be32 daddr, struct flowi4 *fl4)
 {
     struct rtable *rt;
+    struct dst_entry *den;
+    struct net_device *nde;
     __be16 df;
     int mtu;
 
@@ -76,6 +78,9 @@ struct rtable *ip4_find_route(struct sk_buff *skb, struct iphdr *iph,
     fl4->saddr = (saddr ? saddr : inet_sk(sk)->inet_saddr);
     fl4->flowi4_tos = RT_CONN_FLAGS(sk);
     fl4->flowi4_proto = sk->sk_protocol;
+    
+    // GTP5G_LOG(NULL, "Output interface: %d", sk->sk_bound_dev_if);
+    // GTP5G_LOG(NULL, "Destiantion: %pI4\n", &fl4->daddr);
 
     rt = ip_route_output_key(dev_net(gtp_dev), fl4);
     if (IS_ERR(rt)) {
@@ -83,6 +88,20 @@ struct rtable *ip4_find_route(struct sk_buff *skb, struct iphdr *iph,
         gtp_dev->stats.tx_carrier_errors++;
         goto err;
     }
+    
+    // GTP5G_LOG(NULL, "Table ID: %d\n", rt->rt_genid);
+    // GTP5G_LOG(NULL, "Flags: %u\n", rt->rt_flags);
+    // GTP5G_LOG(NULL, "Types: %d\n", rt->rt_type);
+    // GTP5G_LOG(NULL, "Is input or not: %d\n", rt->rt_is_input);
+    // GTP5G_LOG(NULL, "Uses gateway or not: %d\n", rt->rt_uses_gateway);
+    // GTP5G_LOG(NULL, "Interface ID in rtable: %d\n", rt->rt_iif);
+    // GTP5G_LOG(NULL, "Gateway family: %d\n", rt->rt_gw_family);
+    // GTP5G_LOG(NULL, "Gateway: %u\n", ntohl(rt->rt_gw4));
+
+    den = &rt->dst;
+    nde = den->dev;
+
+    // GTP5G_LOG(NULL, "Interface ID: %d\n", nde->ifindex);
 
     if (rt->dst.dev == gtp_dev) {
         GTP5G_ERR(gtp_dev, "circular route to %pI4\n", &iph->daddr);
@@ -163,6 +182,77 @@ err:
     return ERR_PTR(-ENOENT);
 }
 
+struct rtable *lan_find_route(struct sk_buff *skb,
+    struct sock *sk, struct net_device *gtp_dev, 
+    __be32 saddr, __be32 daddr, struct flowi4 *fl4){
+    
+    struct rtable *rt;
+
+    memset(fl4, 0, sizeof(*fl4));
+    fl4->flowi4_oif = sk->sk_bound_dev_if;
+    fl4->daddr = daddr;
+    fl4->saddr = (saddr ? saddr : inet_sk(sk)->inet_saddr);
+    fl4->flowi4_tos = RT_CONN_FLAGS(sk);
+    fl4->flowi4_proto = sk->sk_protocol;
+
+    // For searching specific route table
+    rt = ip_route_output_key_hash(dev_net(gtp_dev), fl4, skb);
+    if (IS_ERR(rt)) {
+        GTP5G_ERR(gtp_dev, "no route from %#x to %#x\n", saddr, daddr);
+        gtp_dev->stats.tx_carrier_errors++;
+        goto err;
+    }
+
+    if (rt->dst.dev == gtp_dev) {
+        GTP5G_ERR(gtp_dev, "Packet colllisions from %#x to %#x\n", 
+            saddr, daddr);
+        gtp_dev->stats.collisions++;
+        goto err_rt;
+    }
+
+    skb_dst_drop(skb);
+
+    return rt;
+
+err_rt:
+    ip_rt_put(rt);
+err:
+    return ERR_PTR(-ENOENT);
+
+}
+
+int lan_xmit(struct sk_buff *skb, struct sock *sk, struct net_device *gtp_dev){
+    struct iphdr *iph = ip_hdr(skb);
+    struct flowi4 fl4;
+    struct rtable *rt;
+    __be32 src;
+
+    rt = lan_find_route(skb, sk, gtp_dev, 0, iph->daddr, &fl4);
+    if (IS_ERR(rt)) {
+        GTP5G_ERR(gtp_dev, "Failed to find route\n");
+        return -EBADMSG;
+    }
+    skb_dst_set(skb, &rt->dst);
+    /*
+        fill in correct source address of the outgoing interface.
+        Support multiple IP address configured on outgoing interface.
+     */
+    src = inet_select_addr(rt->dst.dev,
+                    rt_nexthop(rt, iph->daddr),
+                    RT_SCOPE_UNIVERSE);
+    if (src != 0) {
+        iph->saddr = src;
+    }
+
+    if (ip_local_out(dev_net(gtp_dev), sk, skb) < 0) {
+        GTP5G_ERR(gtp_dev, "Failed to send skb to ip layer\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+
 int ip_xmit(struct sk_buff *skb, struct sock *sk, struct net_device *gtp_dev) 
 {
     struct iphdr *iph = ip_hdr(skb);
@@ -239,6 +329,7 @@ void gtp5g_fwd_emark_skb_ipv4(struct sk_buff *skb,
 
 void gtp5g_xmit_skb_ipv4(struct sk_buff *skb, struct gtp5g_pktinfo *pktinfo)
 {
+    // GTP5G_LOG(NULL, "Go to ue\n");
     udp_tunnel_xmit_skb(pktinfo->rt, 
         pktinfo->sk,
         skb,
@@ -283,6 +374,8 @@ void gtp5g_push_header(struct sk_buff *skb, struct gtp5g_pktinfo *pktinfo)
     /* Suppport for extension header, sequence number and N-PDU.
      * Update the length field if any of them is available.
      */
+
+    // QFI would be 1 if PDR has QER
     if (pktinfo->qfi > 0) {
         ext_flag = 1; 
 

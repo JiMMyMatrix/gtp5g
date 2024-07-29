@@ -9,6 +9,7 @@
 #include "far.h"
 #include "pktinfo.h"
 #include "api_version.h"
+#include "log.h"
 
 #include <linux/rculist.h>
 #include <net/netns/generic.h>
@@ -72,6 +73,9 @@ int gtp5g_genl_add_far(struct sk_buff *skb, struct genl_info *info)
     }
 
     far = find_far_by_id(gtp, seid, far_id);
+    if(far)
+        GTP5G_LOG(NULL, "far id: %d\n", far->id);
+    
     if (far) {
         if (info->nlhdr->nlmsg_flags & NLM_F_EXCL) {
             rcu_read_unlock();
@@ -84,6 +88,7 @@ int gtp5g_genl_add_far(struct sk_buff *skb, struct genl_info *info)
             return -EOPNOTSUPP;
         }
 
+        
         flag = 0;
         err = far_fill(far, gtp, info, &flag, &epkt_info);
         if (err) {
@@ -98,6 +103,7 @@ int gtp5g_genl_add_far(struct sk_buff *skb, struct genl_info *info)
             /* SKB size GTPU(8) + UDP(8) + IP(20) + Eth(14)
              * + 2-Bytes align the IP header
              * */
+            GTP5G_LOG(NULL, "Send end marker\n");
             struct sk_buff *skb = __netdev_alloc_skb(gtp->dev, 52, GFP_KERNEL);
             if (!skb) {
                 rcu_read_unlock();
@@ -366,6 +372,8 @@ static int header_creation_fill(struct forwarding_parameter *param,
         hdr_creation->teid = htonl(nla_get_u32(attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]));
         hdr_creation->peer_addr_ipv4.s_addr = nla_get_be32(attrs[GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4]);
         hdr_creation->port = htons(nla_get_u16(attrs[GTP5G_OUTER_HEADER_CREATION_PORT]));
+
+        GTP5G_LOG(NULL, "Update address: %pI4\n", &hdr_creation->peer_addr_ipv4.s_addr);
         /* For Downlink traffic from UPF to gNB
          * In some cases,
          *  1) SMF will send PFCP Msg filled with FAR's TEID and gNB N3 addr as 0
@@ -452,6 +460,10 @@ static int forwarding_parameter_fill(struct forwarding_parameter *param,
         if (!(fwd_policy->mark = simple_strtol(fwd_policy->identifier, NULL, 10))) {
             return -EINVAL;
         }
+    }
+
+    if (attrs[GTP5G_FORWRADING_PARAMETER_DESTINATION_INTERFACE]){
+        param->destination_interface = nla_get_u8(attrs[GTP5G_FORWRADING_PARAMETER_DESTINATION_INTERFACE]);
     }
 
     return 0;
@@ -576,6 +588,11 @@ static int gtp5g_genl_fill_far(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
         if ((fwd_policy = fwd_param->fwd_policy))
             if (nla_put(skb, GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY, fwd_policy->len, fwd_policy->identifier))
                 goto genlmsg_fail;
+
+        if (fwd_param->destination_interface){
+            if(nla_put_u8(skb, GTP5G_FORWRADING_PARAMETER_DESTINATION_INTERFACE, fwd_param->destination_interface))
+                goto genlmsg_fail;
+        }
 
         nla_nest_end(skb, nest_fwd_param);
     }

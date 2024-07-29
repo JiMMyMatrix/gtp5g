@@ -36,6 +36,9 @@ extern struct rtable *ip4_find_route(struct sk_buff *, struct iphdr *,
         __be32, __be32, struct flowi4 *);
 extern void gtp5g_fwd_emark_skb_ipv4(struct sk_buff *,
         struct net_device *, struct gtp5g_emark_pktinfo *);
+extern int lan_xmit(struct sk_buff *, struct sock *, struct net_device *);
+extern struct rtable *lan_find_route(struct sk_buff *, struct sock *, struct net_device *, 
+        __be32 , __be32 , struct flowi4 *);
 extern int ip_xmit(struct sk_buff *, struct sock *, struct net_device *);
 extern void gtp5g_xmit_skb_ipv4(struct sk_buff *, struct gtp5g_pktinfo *);
 

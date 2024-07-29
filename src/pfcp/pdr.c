@@ -254,6 +254,60 @@ mismatch:
     return 0;
 }
 
+struct pdr *pdr_find_by_lan(struct gtp5g_dev *gtp, struct sk_buff *skb,
+        unsigned int hdrlen, u32 teid, u8 type)
+{
+
+    struct hlist_head *head;
+    struct pdr *pdr;
+    struct pdi *pdi;
+    struct iphdr *iph;
+    __be32 *target_addr = NULL;
+
+    if (!gtp)
+        return NULL;
+
+    if (ntohs(skb->protocol) != ETH_P_IP)
+        return NULL;
+
+    if (type == GTPV1_MSG_TYPE_TPDU) {
+        if (!pskb_may_pull(skb, hdrlen + sizeof(struct iphdr)))
+            return NULL;
+        iph = (struct iphdr *)(skb->data + hdrlen);
+        target_addr = (gtp->role == GTP5G_ROLE_UPF ? &iph->saddr : &iph->daddr);
+    }
+
+    // Now the target address is UE's ip address 10.60.0.x, and use the ip to match PDR rule
+    GTP5G_LOG(NULL, "Target address:%pI4\n", target_addr);
+
+    head = &gtp->i_teid_hash[u32_hashfn(teid) % gtp->hash_size];
+    hlist_for_each_entry_rcu(pdr, head, hlist_i_teid) {
+        pdi = pdr->pdi;
+        // GTP5G_LOG(NULL, "Iterate PDR ID:%d\n", pdr->id);
+
+        if (!pdi)
+            continue;
+        if (!(pdi->f_teid && pdi->f_teid->teid == teid))
+            continue;
+
+        if (type != GTPV1_MSG_TYPE_TPDU)
+            return pdr;
+
+        if (pdr->precedence != 255)
+            continue;
+        
+        if (pdi->ue_addr_ipv4)
+            if (!(pdr->af == AF_INET && target_addr && *target_addr == pdi->ue_addr_ipv4->s_addr))
+                continue;
+
+        GTP5G_LOG(NULL, "Lan match PDR ID:%d\n", pdr->id);
+        return pdr;
+    }
+
+    return NULL;
+}
+
+
 struct pdr *pdr_find_by_gtp1u(struct gtp5g_dev *gtp, struct sk_buff *skb,
         unsigned int hdrlen, u32 teid, u8 type)
 {
@@ -279,9 +333,16 @@ struct pdr *pdr_find_by_gtp1u(struct gtp5g_dev *gtp, struct sk_buff *skb,
         target_addr = (gtp->role == GTP5G_ROLE_UPF ? &iph->saddr : &iph->daddr);
     }
 
+    GTP5G_LOG(NULL, "Target address: %pI4\n", target_addr);
+    // GTP5G_LOG(NULL, "Search src: %pI4", &iph->saddr);
+    // GTP5G_LOG(NULL, "Search dst: %pI4", &iph->daddr);
+
     head = &gtp->i_teid_hash[u32_hashfn(teid) % gtp->hash_size];
     hlist_for_each_entry_rcu(pdr, head, hlist_i_teid) {
         pdi = pdr->pdi;
+
+        GTP5G_LOG(NULL, "Iterate PDR ID:%d\n", pdr->id);
+
         if (!pdi)
             continue;
 
@@ -292,7 +353,7 @@ struct pdr *pdr_find_by_gtp1u(struct gtp5g_dev *gtp, struct sk_buff *skb,
         if (type != GTPV1_MSG_TYPE_TPDU)
             return pdr;
 
-        // check outer IP dest addr to distinguish between N3 and N9 packet whil e act as i-upf
+        // check outer IP dest addr to distinguish between N3 and N9 packet while act as i-upf
 #ifdef MATCH_IP
     #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 0, 0)
             outer_iph = (struct iphdr *)(skb->head + skb->network_header);
@@ -312,7 +373,7 @@ struct pdr *pdr_find_by_gtp1u(struct gtp5g_dev *gtp, struct sk_buff *skb,
             if (!sdf_filter_match(pdi->sdf, skb, hdrlen, GTP5G_SDF_FILTER_OUT))
                 continue;
 
-        GTP5G_INF(NULL, "Match PDR ID:%d\n", pdr->id);
+        GTP5G_LOG(NULL, "Uplink match PDR ID:%d\n", pdr->id);
 
         return pdr;
     }
@@ -340,6 +401,7 @@ struct pdr *pdr_find_by_ipv4(struct gtp5g_dev *gtp, struct sk_buff *skb,
             if (!sdf_filter_match(pdi->sdf, skb, hdrlen, GTP5G_SDF_FILTER_OUT))
                 continue;
 
+        GTP5G_LOG(NULL, "Downlink match PDR ID:%d\n", pdr->id);
         return pdr;
     }
 
