@@ -328,8 +328,8 @@ static int gtp1u_udp_encap_recv(struct gtp5g_dev *gtp, struct sk_buff *skb)
         }
     }
 
-    // pdr = pdr_find_by_gtp1u(gtp, skb, hdrlen, teid, gtp_type);
-    pdr = pdr_find_by_lan(gtp, skb, hdrlen, teid, gtp_type);
+    pdr = pdr_find_by_gtp1u(gtp, skb, hdrlen, teid, gtp_type);
+    // pdr = pdr_find_by_lan(gtp, skb, hdrlen, teid, gtp_type);
     if (!pdr) {
         GTP5G_ERR(gtp->dev, "No PDR match this skb : teid[%d]\n", ntohl(teid));
         return PKT_DROPPED;
@@ -894,25 +894,23 @@ static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
             skb->dev = dev;
 
             // skb_reset_network_header(skb);
-            skb_reset_inner_headers(skb);
+            // skb_reset_inner_headers(skb);
 
             iph = ip_hdr(skb);
+
             if (iph){
-                GTP5G_LOG(NULL, "Uplink after Source: %pI4\n", &iph->saddr);
-                GTP5G_LOG(NULL, "Uplink after Destination: %pI4\n", &iph->daddr);
+                GTP5G_LOG(NULL, "Uplink Lan outer Source: %pI4\n", &iph->saddr);
+                GTP5G_LOG(NULL, "Uplink Lan outer Destination: %pI4\n", &iph->daddr);
             }else
-                GTP5G_LOG(NULL, "Uplink after ip header null\n");
+                GTP5G_LOG(NULL, "Uplink ip header null\n");
 
             if (pskb_may_pull(skb, skb->len)){
-                // uhdr = skb_push(skb, sizeof(struct udphdr));
-                // memset(uhdr, 0, sizeof(struct udphdr));
-
                 rt = lan_find_route(
                     skb,
                     pdr->sk, 
                     dev,
                     0,
-                    hdr_creation->peer_addr_ipv4.s_addr, //Need to update to self define
+                    hdr_creation->peer_addr_ipv4.s_addr, 
                     &fl4);
 
                 if (IS_ERR(rt))
@@ -1159,18 +1157,18 @@ int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
      */ 
     udph = udp_hdr(skb);
     
-    if (!udph)
-        GTP5G_LOG(NULL, "No UDP header\n");
-    if (!gtp1)
-        GTP5G_LOG(NULL, "No GTP header\n");
+    // if (!udph)
+    //     GTP5G_LOG(NULL, "No UDP header\n");
+    // if (!gtp1)
+    //     GTP5G_LOG(NULL, "No GTP header\n");
 
-    GTP5G_LOG(NULL, "GTP type: %d\n", gtp1->type);
-    GTP5G_LOG(NULL, "GTP flags: %d\n", gtp1->flags);
-    GTP5G_LOG(NULL, "UDP src port: %d\n", ntohs(udph->source));
-    GTP5G_LOG(NULL, "UDP dst port: %d\n", ntohs(udph->dest));
-    GTP5G_LOG(NULL, "UDP len: %d\n", ntohs(udph->len));
-    GTP5G_LOG(NULL, "UDP check: %hu\n", udph->check);
-    GTP5G_LOG(NULL, "Downlink search address: %pI4\n", &iph->daddr);
+    // GTP5G_LOG(NULL, "GTP type: %d\n", gtp1->type);
+    // GTP5G_LOG(NULL, "GTP flags: %d\n", gtp1->flags);
+    // GTP5G_LOG(NULL, "UDP src port: %d\n", ntohs(udph->source));
+    // GTP5G_LOG(NULL, "UDP dst port: %d\n", ntohs(udph->dest));
+    // GTP5G_LOG(NULL, "UDP len: %d\n", ntohs(udph->len));
+    // GTP5G_LOG(NULL, "UDP check: %hu\n", udph->check);
+    // GTP5G_LOG(NULL, "Downlink search address: %pI4\n", &iph->daddr);
 
     // if(!tst)
     //     GTP5G_LOG(NULL, "No Out IP header\n");
